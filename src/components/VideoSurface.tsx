@@ -164,6 +164,16 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     }
     if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
 
+    // iOS/WKWebView：换源前显式释放旧媒体。上一集以 ended 状态被切走时只 pause() 是空操作，
+    // 原生播放器不会释放，新的 <video> 可能一直停在缓冲态（表现为自动连播卡住）。
+    try {
+      video.pause();
+      if (video.getAttribute("src")) {
+        video.removeAttribute("src");
+        video.load();
+      }
+    } catch { /* ignore */ }
+
     const proxied = isLocalMedia(src);
     const url = proxied ? src : playlist(src);
     const useHls = !url.includes("/seg?u=");
@@ -299,6 +309,17 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
     v.muted = muted;
     v.playbackRate = rate;
   };
+
+  /* 卸载时释放 media 资源（尤其 iOS：ended 状态下仅 pause 不会释放原生播放器） */
+  useEffect(() => () => {
+    const v = videoRef.current;
+    if (!v) return;
+    try {
+      v.pause();
+      v.removeAttribute("src");
+      v.load();
+    } catch { /* ignore */ }
+  }, []);
 
   const nearEndFiredRef = useRef(false);
   useEffect(() => {
