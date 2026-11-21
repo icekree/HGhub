@@ -26,7 +26,23 @@ export function usePlaybackActivity(
     v.play().then(() => {
       // The page may have changed while play() was pending.
       if (!mounted.current || !latest.current.active) v.pause();
-    }).catch(e => latest.current.trace("play.rejected", { source, error_name: e?.name }));
+    }).catch(e => {
+      latest.current.trace("play.rejected", { source, error_name: e?.name });
+      // iOS WKWebView 默认要求有声播放必须由用户手势触发。自动连播发生在 ended 事件里，
+      // 没有手势，play() 会以 NotAllowedError 拒绝；旧逻辑直接吞掉异常，界面就永远停在缓冲态。
+      // iOS 允许静音起播，因此这里先静音播放，起播后再恢复用户原本的静音状态。
+      if (e?.name !== "NotAllowedError") return;
+      const wasMuted = v.muted;
+      v.muted = true;
+      v.play().then(() => {
+        if (!mounted.current || !latest.current.active) { v.pause(); v.muted = wasMuted; return; }
+        v.muted = wasMuted;
+        latest.current.trace("play.muted_recovery", { source, was_muted: wasMuted });
+      }).catch(e2 => {
+        v.muted = wasMuted;
+        latest.current.trace("play.rejected_muted", { source, error_name: e2?.name });
+      });
+    });
   }, []);
   const pause = useCallback((source = "handle") => {
     wanted.current = false;
