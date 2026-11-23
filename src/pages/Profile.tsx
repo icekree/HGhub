@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, APP_VERSION, fmt, fmtTime, isMobile, platform } from "../api";
 import type { Detail } from "../types";
 import { useStore } from "../store";
@@ -12,23 +12,74 @@ export default function Profile({ wide }: { wide: boolean }) {
   const [tab, setTab] = useState<"fav" | "history">("fav");
   const [cards, setCards] = useState<Detail[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /* 已请求到的收藏/历史条数，滑动到底部时继续取下一批 */
+  const loadedRef = useRef(0);
+  const aliveRef = useRef(true);
+  const idsRef = useRef<number[]>([]);
+  /* 列表切换后作废在途的“加载更多”响应，避免旧数据追加到新列表 */
+  const genRef = useRef(0);
+  const moreLoadingRef = useRef(false);
 
   const ids = tab === "fav" ? favs : history.map((h) => h.id);
+  idsRef.current = ids;
+  const idsKey = ids.join(",");
+  const BATCH = 12;
   /** 观看记录里这条的进度（收藏页没有） */
   const progressOf = (id: number) => (tab === "history" ? history.find((h) => h.id === id) : undefined);
 
+  /* 切换收藏/历史或列表本身变化时，重新加载第一批 */
   useEffect(() => {
-    let alive = true;
-    if (!ids.length) { setCards([]); return; }
+    aliveRef.current = true;
+    genRef.current += 1;
+    const gen = genRef.current;
+    moreLoadingRef.current = false;
+    loadedRef.current = 0;
+    setCards([]);
+    setLoadingMore(false);
+    const all = idsRef.current;
+    if (!all.length) { setLoading(false); return undefined; }
     setLoading(true);
-    Promise.allSettled(ids.slice(0, 12).map((id) => api.video(id)))
+    const first = all.slice(0, BATCH);
+    Promise.allSettled(first.map((id) => api.video(id)))
       .then((rs) => {
-        if (!alive) return;
+        if (!aliveRef.current || gen !== genRef.current) return;
+        loadedRef.current = first.length;
         setCards(rs.filter((r) => r.status === "fulfilled").map((r) => (r as PromiseFulfilledResult<Detail>).value));
       })
-      .finally(() => { if (alive) setLoading(false); });
-    return () => { alive = false; };
-  }, [ids.join(",")]);
+      .finally(() => { if (aliveRef.current && gen === genRef.current) setLoading(false); });
+    return () => { aliveRef.current = false; };
+  }, [idsKey]);
+
+  const loadMore = useCallback(() => {
+    if (loading || loadingMore || moreLoadingRef.current) return;
+    const all = idsRef.current;
+    const start = loadedRef.current;
+    if (start >= all.length) return;
+    const next = all.slice(start, start + BATCH);
+    if (!next.length) return;
+    moreLoadingRef.current = true;
+    const gen = genRef.current;
+    setLoadingMore(true);
+    Promise.allSettled(next.map((id) => api.video(id)))
+      .then((rs) => {
+        if (!aliveRef.current || gen !== genRef.current) return;
+        loadedRef.current = start + next.length;
+        setCards((prev) => [...prev, ...rs.filter((r) => r.status === "fulfilled").map((r) => (r as PromiseFulfilledResult<Detail>).value)]);
+      })
+      .finally(() => {
+        if (gen !== genRef.current) return;
+        moreLoadingRef.current = false;
+        if (aliveRef.current) setLoadingMore(false);
+      });
+  }, [idsKey, loading, loadingMore]);
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) loadMore();
+  };
 
   return (
     <div className="absolute inset-0 bg-bg flex flex-col">
@@ -42,7 +93,7 @@ export default function Profile({ wide }: { wide: boolean }) {
         )}
       </div>
 
-      <div className="flex-1 scroll-y px-4 pt-2 pb-24">
+      <div ref={scrollRef} onScroll={onScroll} className="flex-1 scroll-y px-4 pt-2 pb-24">
         {/* 资料卡：已登录 / 未登录（点开登录抽屉） */}
         {user ? (
           <div className="rounded-(--r-lg) bg-s1 p-4 elev-1 flex items-center gap-3.5 a-rise">
@@ -120,6 +171,9 @@ export default function Profile({ wide }: { wide: boolean }) {
               title={tab === "fav" ? "还没有收藏" : "还没有观看记录"}
               sub={tab === "fav" ? "在剧集页点收藏，之后就能在这里找到" : "看过的剧集会出现在这里"}
               action="去逛逛" onAction={() => push({ kind: "ranks" })} />
+          )}
+          {loadingMore && (
+            <div className="flex justify-center py-4"><div className="w-6 h-6 spinner" /></div>
           )}
           {cards.length > 0 && tab === "history" && (
             <button onClick={clearHistory} className="mt-3 w-full h-9 rounded-(--r-ctl) bg-s3 text-[12px] text-mut pressable">清空观看历史</button>
