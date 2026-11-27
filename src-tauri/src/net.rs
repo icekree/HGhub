@@ -1,7 +1,7 @@
 //! 网络层：与上游站点对话。
 //!
-//! 站点把全部 `/api/**` 调用收敛成 `POST /api/edge/request` 的信封，
-//! 我们只实现这一个入口，其余接口都是「填 path」。
+//! 上游早期把 `/api/**` 收敛成 `POST /api/edge/request` 的信封，现已停用该入口
+//! （返回 503「接口已停用」）；这里改为按真实 method/path 直接请求业务接口。
 //!
 //! # 代理（用户反馈「浏览器能开、HGhub 打不开」的根因就在这里）
 //!
@@ -20,8 +20,6 @@
 //! `net_diag` 命令会输出 DNS/HTTP/环境变量快照。
 
 use crate::network_policy;
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine;
 use once_cell::sync::Lazy;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -483,21 +481,9 @@ pub async fn edge(
     {
         return Err("镜像线路仅供游客浏览；登录/注册请切换到固定线路".into());
     }
-    let (encoded, ctype) = match &body {
-        Some(v) => (
-            B64.encode(serde_json::to_vec(v).map_err(|e| e.to_string())?),
-            "application/json",
-        ),
-        None => (String::new(), ""),
-    };
-    let envelope = json!({
-        "method": method,
-        "path": path,
-        "body": encoded,
-        "content_type": ctype,
-    });
-
-    let url = format!("{cur}/api/edge/request");
+    // 站点已停用 `/api/edge/request` 信封接口（返回 503「接口已停用」），
+    // 改为直接请求对应的业务路径；鉴权头、重试、错误处理保持不变。
+    let url = format!("{cur}{}", if path.starts_with('/') { path.to_string() } else { format!("/{path}") });
     let referer = format!("{cur}/");
     let token = token.map(|s| s.to_string());
 
@@ -517,7 +503,7 @@ pub async fn edge(
     let value = with_retry(can_retry, || {
         attempt += 1;
         let attempt = attempt;
-        let envelope = envelope.clone();
+        let body = body.clone();
         let token = token.clone();
         let url = url.clone();
         let referer = referer.clone();
@@ -535,11 +521,17 @@ pub async fn edge(
                 for hop in 0..=5 {
                     let (target, client) = client_for(next.as_str()).await?;
                     target_host = target.host_str().unwrap_or("").to_string();
+                    let http_method =
+                        reqwest::Method::from_bytes(method.as_bytes()).map_err(|e| e.to_string())?;
                     let mut req = client
-                        .post(target.clone())
+                        .request(http_method, target.clone())
                         .header("Accept", "application/json")
-                        .header("Referer", &referer)
-                        .json(&envelope);
+                        .header("Referer", &referer);
+                    if let Some(payload) = body.as_ref() {
+                        req = req
+                            .header("Content-Type", "application/json")
+                            .json(payload);
+                    }
                     if let Some(t) = token.as_deref() {
                         if !t.is_empty() {
                             req = req.header("Authorization", format!("Bearer {t}"));
