@@ -15,6 +15,8 @@ export type VideoHandle = {
   mute: (m: boolean) => void;
   volume: (v: number) => void;
   reload: () => void;
+  /** 主动释放媒体（iOS 在 ended 状态下换集时，必须先释放旧播放器） */
+  release: () => void;
 };
 
 type Props = {
@@ -149,6 +151,20 @@ const VideoSurface = forwardRef<VideoHandle, Props>(function VideoSurface(
         try { v.currentTime = cur; } catch { /* ignore */ }
       }
       activity.play("reload");
+    },
+    release: () => {
+      const v = videoRef.current;
+      if (hlsRef.current) {
+        try { hlsRef.current.destroy(); } catch { /* ignore */ }
+        hlsRef.current = null;
+      }
+      if (!v) return;
+      try {
+        v.pause();
+        v.removeAttribute("src");
+        v.load();
+        trace("source.release", { reason: "episode_switch" });
+      } catch { /* ignore */ }
     },
   }));
 

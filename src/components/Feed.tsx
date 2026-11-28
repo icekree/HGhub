@@ -385,6 +385,17 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
     setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
   }, [playKey]);
 
+  /* 换集后若播放器停在暂停态（iOS 自动连播偶发 play() 挂起），主动补一次 play */
+  useEffect(() => {
+    const tid = window.setTimeout(() => {
+      const v = videoRef.current?.el();
+      if (!v || !active || !playUrl) return;
+      if (v.paused && !v.ended) videoRef.current?.play();
+    }, 3000);
+    return () => window.clearTimeout(tid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playKey, playUrl, active]);
+
   /* 进出全屏时复位双指缩放并校准滚动条位置 */
   useEffect(() => {
     setZoom({ scale: 1, x: 0, y: 0, gesturing: false });
@@ -836,7 +847,14 @@ export default function Feed({ videoIds, startIndex = 0, title = "", mode, kind 
                       onPlaying={() => { setPaused(false); setWaiting(false); setErr(""); }}
                       onPause={() => setPaused(true)}
                       onWaiting={() => setWaiting(true)}
-                      onEnded={() => { const next = episodes.find((e) => e.ep_num === curEp + 1); if (next) pickEp(next.ep_num); }}
+                      onEnded={() => {
+                        const next = episodes.find((e) => e.ep_num === curEp + 1);
+                        if (!next) return;
+                        // 自动连播发生在 ended 事件里，iOS 上必须先释放旧播放器再换源，
+                        // 否则新一集会一直停在缓冲转圈（手动选集时旧视频还在播，pause() 能真正释放）。
+                        videoRef.current?.release();
+                        pickEp(next.ep_num);
+                      }}
                       onError={(m) => setErr(m)}
                     />
                   </div>
